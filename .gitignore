@@ -1,0 +1,15 @@
+# 二进制
+/tinia
+/dist/
+*.exe
+*.test
+
+# Go
+*.out
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
