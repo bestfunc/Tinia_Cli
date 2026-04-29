@@ -1,46 +1,46 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/bestfunc/tinia-cli/internal/auth"
 	"github.com/bestfunc/tinia-cli/internal/client"
-	"github.com/bestfunc/tinia-cli/internal/config"
 	"github.com/spf13/cobra"
 )
 
-// project view（dev_list_projects 返回的子集）
-type projectInfo struct {
-	ID          int    `json:"id"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Namespace   string `json:"namespace"`
-	Version     string `json:"version"`
-}
-
 func newInitCmd() *cobra.Command {
 	var host string
-	var projectID int
+	var name string
+	var description string
+	var template string
 
 	cmd := &cobra.Command{
-		Use:   "init",
-		Short: "在当前目录初始化 Tinia 项目（生成 .tinia/config.yaml）",
-		Long: `在当前 workspace 关联到一个远端 Tinia dev project：
+		Use:   "init [name]",
+		Short: "在当前目录创建一个新的 dev project（远端 + 本地骨架）",
+		Long: `在当前目录创建一个全新的 Tinia dev project：
 
-- 默认进入交互式选择：列出该 host 上所有可访问的 dev projects 让你选
-- 或者用 --project-id 直接指定（不交互）
-- 没指定 --host 时会让你从 ~/.tinia/auth.json 已登录列表里选
+1. 调远端 dev_create_project 创建项目（server 自动 scaffold 骨架）
+2. 把 scaffold 出来的文件镜像到当前目录
+3. 写 .tinia/config.yaml 关联
 
-执行后生成 .tinia/config.yaml（含 host + project_id），可提交到 git。`,
-		RunE: func(cmd *cobra.Command, _ []string) error {
+要求当前目录是空的（允许 README / LICENSE / .git / .DS_Store）。
+
+模板（--template）：
+  basic_node          最简 Python 节点骨架（默认）
+  analysis_node       节点 + 自定义结果视图
+  datasource_plugin   凭证 + 数据源 + 迁移 + UI 管理页
+  empty               仅 tinia-repo.yaml，完全自定义
+
+不指定 --host 时从 ~/.tinia/auth.json 已登录列表里选；只有一个时直接用。
+
+要拉取已存在的项目用 tinia clone <id-or-name>，看可用项目用 tinia list。`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
-			// 1. 选 host
 			if host == "" {
 				h, err := pickHost()
 				if err != nil {
@@ -50,112 +50,78 @@ func newInitCmd() *cobra.Command {
 			}
 			host = strings.TrimRight(host, "/")
 
-			// 2. 取 token
+			if len(args) > 0 && name == "" {
+				name = args[0]
+			}
+			if name == "" {
+				name = readLine("项目名（英文，不含空格）", "")
+			}
+			if name == "" {
+				return fmt.Errorf("项目名必填")
+			}
+			if template == "" {
+				template = "basic_node"
+			}
+
+			cwd, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+			if err := ensureEmptyDir(cwd); err != nil {
+				return err
+			}
+
 			ha, err := auth.EnsureValid(ctx, host)
 			if err != nil {
 				return err
 			}
 			c := client.New(host, ha.AccessToken)
 
-			// 3. 选 project
-			var pi *projectInfo
-			if projectID > 0 {
-				pi, err = fetchProject(ctx, c, projectID)
-				if err != nil {
-					return err
-				}
-			} else {
-				pi, err = pickProject(ctx, c)
-				if err != nil {
-					return err
-				}
+			fmt.Printf("→ 在 %s 创建项目 %s（template=%s）...\n", host, name, template)
+			pi, err := createProject(ctx, c, name, description, template)
+			if err != nil {
+				return err
 			}
+			fmt.Printf("  ✓ 远端项目已创建：#%d ns=%s\n", pi.ID, pi.Namespace)
 
-			// 4. 写 .tinia/config.yaml
-			cwd, _ := os.Getwd()
-			cfg := &config.Config{
-				Host:        host,
-				ProjectID:   pi.ID,
-				ProjectName: pi.Name,
-				Namespace:   pi.Namespace,
-			}
-			if err := config.Save(cwd, cfg); err != nil {
+			fmt.Println("→ 拉取 scaffold 骨架到本地...")
+			if err := downloadProject(ctx, host, ha.AccessToken, cwd, pi.ID); err != nil {
 				return err
 			}
 
-			fmt.Printf("✓ 已初始化 — host=%s project=%s (#%d, ns=%s)\n",
-				host, pi.Name, pi.ID, pi.Namespace)
-			fmt.Printf("  接下来可以 tinia push / tinia dev / tinia reload\n")
+			if err := writeConfig(cwd, host, pi); err != nil {
+				return err
+			}
+
+			fmt.Printf("\n✓ init 完成 — host=%s project=%s (#%d)\n", host, pi.Name, pi.ID)
+			fmt.Printf("  接下来可以编辑代码，再 tinia push / tinia dev\n")
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&host, "host", "", "Tinia 实例 URL（不指定则从已登录列表选）")
-	cmd.Flags().IntVar(&projectID, "project-id", 0, "直接指定 project ID（跳过交互选择）")
+	cmd.Flags().StringVar(&name, "name", "", "项目名（也可作位置参数）")
+	cmd.Flags().StringVar(&description, "description", "", "项目描述（可选）")
+	cmd.Flags().StringVar(&template, "template", "", "模板：basic_node | analysis_node | datasource_plugin | empty（默认 basic_node）")
 	return cmd
 }
 
-func pickHost() (string, error) {
-	table, err := auth.Load()
-	if err != nil {
-		return "", err
+// createProject 调 dev_create_project，返回新项目元数据。
+func createProject(ctx context.Context, c *client.Client, name, description, template string) (*projectInfo, error) {
+	args := map[string]any{
+		"name":          name,
+		"template_type": template,
 	}
-	if len(table) == 0 {
-		return "", fmt.Errorf("没有任何登录记录，请先 tinia login --host <url>")
+	if description != "" {
+		args["description"] = description
 	}
-	if len(table) == 1 {
-		for h := range table {
-			return h, nil
-		}
-	}
-	hosts := []string{}
-	for h := range table {
-		hosts = append(hosts, h)
-	}
-	fmt.Println("已登录的 Tinia 实例：")
-	for i, h := range hosts {
-		fmt.Printf("  %d) %s\n", i+1, h)
-	}
-	fmt.Print("选一个 (1-", len(hosts), "): ")
-	reader := bufio.NewReader(os.Stdin)
-	line, _ := reader.ReadString('\n')
-	idx, err := strconv.Atoi(strings.TrimSpace(line))
-	if err != nil || idx < 1 || idx > len(hosts) {
-		return "", fmt.Errorf("无效选择")
-	}
-	return hosts[idx-1], nil
-}
-
-func fetchProject(ctx context.Context, c *client.Client, id int) (*projectInfo, error) {
 	var resp struct {
 		Project projectInfo `json:"project"`
 	}
-	if err := c.Call(ctx, "dev_get_project", map[string]any{"project_id": id}, &resp); err != nil {
+	if err := c.Call(ctx, "dev_create_project", args, &resp); err != nil {
 		return nil, err
+	}
+	if resp.Project.ID == 0 {
+		return nil, fmt.Errorf("dev_create_project 返回空")
 	}
 	return &resp.Project, nil
-}
-
-func pickProject(ctx context.Context, c *client.Client) (*projectInfo, error) {
-	var resp struct {
-		Projects []projectInfo `json:"projects"`
-	}
-	if err := c.Call(ctx, "dev_list_projects", map[string]any{}, &resp); err != nil {
-		return nil, err
-	}
-	if len(resp.Projects) == 0 {
-		return nil, fmt.Errorf("当前用户没有任何 dev project，请先在 Web UI 创建（或用 dev_create_project）")
-	}
-	fmt.Println("可用的 dev projects：")
-	for i, p := range resp.Projects {
-		fmt.Printf("  %d) %s (#%d, ns=%s, v%s) %s\n",
-			i+1, p.Name, p.ID, p.Namespace, p.Version, p.Description)
-	}
-	fmt.Print("选一个 (1-", len(resp.Projects), "): ")
-	reader := bufio.NewReader(os.Stdin)
-	line, _ := reader.ReadString('\n')
-	idx, err := strconv.Atoi(strings.TrimSpace(line))
-	if err != nil || idx < 1 || idx > len(resp.Projects) {
-		return nil, fmt.Errorf("无效选择")
-	}
-	return &resp.Projects[idx-1], nil
 }

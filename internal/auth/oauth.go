@@ -89,22 +89,31 @@ func Login(ctx context.Context, host, scopes string) (*HostAuth, error) {
 			}
 			q := r.URL.Query()
 			if e := q.Get("error"); e != "" {
-				errCh <- fmt.Errorf("授权被拒绝: %s — %s", e, q.Get("error_description"))
+				desc := q.Get("error_description")
+				errCh <- fmt.Errorf("授权被拒绝: %s — %s", e, desc)
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
-				_, _ = w.Write([]byte("<h2>授权失败，可关闭此窗口</h2>"))
+				reason := e
+				if desc != "" {
+					reason = e + ": " + desc
+				}
+				_, _ = w.Write([]byte(FailurePage(reason)))
 				return
 			}
 			if q.Get("state") != state {
 				errCh <- fmt.Errorf("state 不匹配（CSRF 防护拦截）")
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				_, _ = w.Write([]byte(FailurePage("state mismatch — 可能是 CSRF 防护拦截，请重试")))
 				return
 			}
 			code := q.Get("code")
 			if code == "" {
 				errCh <- fmt.Errorf("回调缺少 code 参数")
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				_, _ = w.Write([]byte(FailurePage("回调缺少 code 参数")))
 				return
 			}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			_, _ = w.Write([]byte(`<h2>✓ 授权成功，可关闭此窗口回到终端</h2>`))
+			_, _ = w.Write([]byte(SuccessPage()))
 			codeCh <- code
 		}),
 		ReadHeaderTimeout: 10 * time.Second,

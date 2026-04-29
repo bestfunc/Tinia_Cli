@@ -27,9 +27,10 @@ func main() {
 dev workspace 跑测试，省去打开浏览器在 Developer Studio 编辑的麻烦。
 
 工作流（典型）：
-  cd my-plugin/
   tinia login --host https://tinia-saas.bestfunc.com    # 一次性 OAuth 授权
-  tinia init                                            # 选 / 创建 dev project
+  tinia list                                            # 看 host 上可用的项目
+  tinia clone <id-or-name>                              # 克隆已有项目（或 tinia init <name> 新建）
+  cd <project>/
   tinia push                                            # 把当前目录推到 Tinia
   tinia reload                                          # 重新装载到内存
   tinia dev                                             # watch 模式（保存即同步 + reload）
@@ -43,7 +44,9 @@ dev workspace 跑测试，省去打开浏览器在 Developer Studio 编辑的麻
 		newLoginCmd(),
 		newLogoutCmd(),
 		newWhoamiCmd(),
+		newListCmd(),
 		newInitCmd(),
+		newCloneCmd(),
 		newStatusCmd(),
 		newPushCmd(),
 		newPullCmd(),
