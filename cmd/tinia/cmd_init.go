@@ -95,9 +95,21 @@ func newInitCmd() *cobra.Command {
 			fmt.Printf("→ 在 %s 创建项目 %s（template=%s）...\n", host, name, template)
 			pi, err := createProject(ctx, c, name, description, template)
 			if err != nil {
-				return err
+				// adopt 模式下，如果项目名已经在远端存在（用户之前 init 失败留下的、或本来就有的），
+				// 自动拉到该项目复用，避免让用户先去远端删项目才能再 adopt。
+				// 非 adopt 模式（带 scaffold）保持严格：不要在已有项目上面盖 scaffold。
+				if adopt && strings.Contains(err.Error(), "项目名已存在") {
+					fmt.Printf("  ⚠ 远端已有同名项目，自动复用现有项目...\n")
+					existing, lookupErr := resolveProject(ctx, c, name)
+					if lookupErr != nil {
+						return fmt.Errorf("远端创建被拒（项目名已存在），但查现有项目失败: %w", lookupErr)
+					}
+					pi = existing
+				} else {
+					return err
+				}
 			}
-			fmt.Printf("  ✓ 远端项目已创建：#%d ns=%s\n", pi.ID, pi.Namespace)
+			fmt.Printf("  ✓ 远端项目就绪：#%d ns=%s\n", pi.ID, pi.Namespace)
 
 			if !adopt {
 				fmt.Println("→ 拉取 scaffold 骨架到本地...")
@@ -129,6 +141,7 @@ func newInitCmd() *cobra.Command {
 }
 
 // createProject 调 dev_create_project，返回新项目元数据。
+// server 直接返回扁平 view（projectSummary map），不带 project 包装 —— 直接反序列化到 projectInfo。
 func createProject(ctx context.Context, c *client.Client, name, description, template string) (*projectInfo, error) {
 	args := map[string]any{
 		"name":          name,
@@ -137,14 +150,12 @@ func createProject(ctx context.Context, c *client.Client, name, description, tem
 	if description != "" {
 		args["description"] = description
 	}
-	var resp struct {
-		Project projectInfo `json:"project"`
-	}
+	var resp projectInfo
 	if err := c.Call(ctx, "dev_create_project", args, &resp); err != nil {
 		return nil, err
 	}
-	if resp.Project.ID == 0 {
+	if resp.ID == 0 {
 		return nil, fmt.Errorf("dev_create_project 返回空")
 	}
-	return &resp.Project, nil
+	return &resp, nil
 }
