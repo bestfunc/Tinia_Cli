@@ -180,7 +180,11 @@ func Refresh(ctx context.Context, host string) (*HostAuth, error) {
 	return ha, nil
 }
 
-// EnsureValid 取 host 的 token；过期则自动 refresh。
+// EnsureValid 取 host 的 token；
+//   - 过期了先尝试用 refresh_token 续期
+//   - refresh_token 也过期 / invalid_grant → 自动跳浏览器走完整 OAuth Login，
+//     不要把错误抛给用户让他自己 tinia login
+//   - 完全没登录过 → 同样直接走 Login（首次跑 init / clone / push 时就别报错）
 func EnsureValid(ctx context.Context, host string) (*HostAuth, error) {
 	host = strings.TrimRight(host, "/")
 	ha, err := Get(host)
@@ -188,10 +192,18 @@ func EnsureValid(ctx context.Context, host string) (*HostAuth, error) {
 		return nil, err
 	}
 	if ha == nil {
-		return nil, fmt.Errorf("未登录 %s，请先 tinia login --host %s", host, host)
+		fmt.Printf("→ 未登录 %s，跳转浏览器登录...\n", host)
+		return Login(ctx, host, "")
 	}
 	if ha.Expired() {
-		return Refresh(ctx, host)
+		refreshed, refreshErr := Refresh(ctx, host)
+		if refreshErr == nil {
+			return refreshed, nil
+		}
+		// refresh 失败的常见原因：refresh_token 过期 / 被吊销 / 服务端 client 被清。
+		// 不要 fail —— 自动重新走授权码 + PKCE 流程。
+		fmt.Printf("→ 登录会话已过期（%v），重新跳转浏览器登录...\n", refreshErr)
+		return Login(ctx, host, "")
 	}
 	return ha, nil
 }
