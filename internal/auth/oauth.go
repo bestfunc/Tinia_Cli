@@ -198,6 +198,24 @@ func Login(ctx context.Context, host, scopes string) (*HostAuth, error) {
 	if err := Put(host, ha); err != nil {
 		return nil, fmt.Errorf("存 token 失败: %w", err)
 	}
+
+	// desktop 场景：拿到 token 后让 webview 主动跳回原 origin（通常是
+	// wails.localhost）。这是关键 — webview 当前停在 callback origin
+	// (127.0.0.1:<random>)，而 React authStore token 存在 webview 原
+	// origin 的 localStorage。回到原 origin 后 token 还在，React 跳
+	// /graphs 而不是 /login。
+	//
+	// 用 IPC navigate 而不是 callback HTML 里 href —— 后者是用户点按钮
+	// 触发的"新 origin 加载"，无法回原 origin。这里走 Wails IPC，让 webview
+	// 在自己 origin 内 location.href = "/"，完全留在原 origin 内。
+	if isDesktop {
+		// 给 SuccessPage 200ms 渲染（webview 收到 HTML 后再 navigate，
+		// 否则可能渲染都来不及）
+		go func() {
+			time.Sleep(200 * time.Millisecond)
+			_ = tryDesktopNavigate(context.Background(), "/")
+		}()
+	}
 	return ha, nil
 }
 
