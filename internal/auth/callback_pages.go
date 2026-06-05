@@ -151,8 +151,27 @@ func SuccessPage(host string) string {
 	tip := "可以关闭这个页面，回到终端继续使用 <code>tinia</code> 命令。"
 	extra := ""
 	if host != "" {
-		tip = "你已经成功登录 Tinia。可以返回主界面继续使用。"
-		extra = `<a class="back-btn" href="` + html.EscapeString(host) + `/">返回 Tinia 首页</a>`
+		// desktop 场景：Wails webview origin 是 wails.localhost，token 存
+		// 那个 origin 的 localStorage。OAuth 流程跳到 callback origin 后
+		// localStorage 看不到，跳任何其他 origin 都不行。
+		//
+		// 1.5 秒后自动 location.href = 'wails://wails.localhost/' —— 让
+		// webview 回到 Wails 内部 origin，localStorage 里 token 还在，
+		// React 检测已登录 → 跳 /graphs。
+		//
+		// 1.5 秒延迟让用户看到"授权成功"提示，"返回 Tinia 首页"按钮 onclick
+		// 也是 wails.localhost，作为手动 fallback。
+		tip = "你已经成功登录 Tinia。正在自动返回主界面..."
+		extra = `<a class="back-btn" id="back-btn" href="#">返回 Tinia 首页</a>
+<script>
+  // Wails webview 内部 origin 为 wails.localhost（v2 默认）
+  var BACK_URL = 'wails://wails.localhost/';
+  document.getElementById('back-btn').addEventListener('click', function(e) {
+    e.preventDefault();
+    window.location.href = BACK_URL;
+  });
+  setTimeout(function() { window.location.href = BACK_URL; }, 1500);
+</script>`
 	}
 	return strings.NewReplacer(
 		"__TIP__", tip,
@@ -174,7 +193,14 @@ func FailurePage(reason, host string) string {
 	}
 	extra := ""
 	if host != "" {
-		extra = `<a class="back-btn" href="` + html.EscapeString(host) + `/">返回 Tinia 首页</a>`
+		// 同 SuccessPage：跳 wails 内部 origin 让 webview 回到 localStorage 所在的 origin
+		extra = `<a class="back-btn" id="back-btn" href="#">返回 Tinia 首页</a>
+<script>
+  document.getElementById('back-btn').addEventListener('click', function(e) {
+    e.preventDefault();
+    window.location.href = 'wails://wails.localhost/';
+  });
+</script>`
 	}
 	return strings.NewReplacer(
 		"__TIP__", tip,
