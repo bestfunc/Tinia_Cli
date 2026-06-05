@@ -118,6 +118,13 @@ func Login(ctx context.Context, host, scopes string) (*HostAuth, error) {
 	}
 
 	// 5. 等 callback
+	// desktop 场景下 webview 加载 callback HTML（不会自动关），SuccessPage / FailurePage
+	// 需要"返回 Tinia 首页"按钮跳回 host/；非 desktop（系统浏览器）传空 host，
+	// 显示原版"关闭页面" 文案。
+	backHost := ""
+	if isDesktop {
+		backHost = host
+	}
 	codeCh := make(chan string, 1)
 	errCh := make(chan error, 1)
 	srv := &http.Server{
@@ -135,24 +142,24 @@ func Login(ctx context.Context, host, scopes string) (*HostAuth, error) {
 				if desc != "" {
 					reason = e + ": " + desc
 				}
-				_, _ = w.Write([]byte(FailurePage(reason)))
+				_, _ = w.Write([]byte(FailurePage(reason, backHost)))
 				return
 			}
 			if q.Get("state") != state {
 				errCh <- fmt.Errorf("state 不匹配（CSRF 防护拦截）")
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
-				_, _ = w.Write([]byte(FailurePage("state mismatch — 可能是 CSRF 防护拦截，请重试")))
+				_, _ = w.Write([]byte(FailurePage("state mismatch — 可能是 CSRF 防护拦截，请重试", backHost)))
 				return
 			}
 			code := q.Get("code")
 			if code == "" {
 				errCh <- fmt.Errorf("回调缺少 code 参数")
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
-				_, _ = w.Write([]byte(FailurePage("回调缺少 code 参数")))
+				_, _ = w.Write([]byte(FailurePage("回调缺少 code 参数", backHost)))
 				return
 			}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			_, _ = w.Write([]byte(SuccessPage()))
+			_, _ = w.Write([]byte(SuccessPage(backHost)))
 			codeCh <- code
 		}),
 		ReadHeaderTimeout: 10 * time.Second,

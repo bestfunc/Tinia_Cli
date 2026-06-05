@@ -69,10 +69,28 @@ const callbackBaseStyle = `
     text-transform: uppercase;
   }
   .brand strong { color: #a78bfa; font-weight: 600; }
+  .back-btn {
+    display: inline-block;
+    margin-top: 20px;
+    padding: 10px 24px;
+    border-radius: 10px;
+    background: linear-gradient(135deg, #a78bfa, #6366f1);
+    color: #fff;
+    font-size: 14px;
+    font-weight: 500;
+    text-decoration: none;
+    border: none;
+    cursor: pointer;
+    transition: transform 0.15s, box-shadow 0.15s;
+  }
+  .back-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 8px 20px rgba(167, 139, 250, 0.35);
+  }
 </style>
 `
 
-const successHTML = `<!doctype html>
+const successHTMLTemplate = `<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
@@ -88,7 +106,8 @@ const successHTML = `<!doctype html>
       <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg>
     </div>
     <h1>授权成功</h1>
-    <p>可以关闭这个页面，回到终端继续使用 <code>tinia</code> 命令。</p>
+    <p>%s</p>
+    %s
     <div class="brand"><strong>TINIA</strong> &nbsp;·&nbsp; CLI</div>
   </main>
 </body>
@@ -110,7 +129,8 @@ const failureTemplate = `<!doctype html>
       <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
     </div>
     <h1>授权失败</h1>
-    <p>这次登录没有完成，可关闭页面后重试 <code>tinia login</code>。</p>
+    <p>%s</p>
+    %s
     %s
     <div class="brand"><strong>TINIA</strong> &nbsp;·&nbsp; CLI</div>
   </main>
@@ -118,16 +138,41 @@ const failureTemplate = `<!doctype html>
 </html>`
 
 // SuccessPage 返回授权成功页面 HTML。
-func SuccessPage() string {
-	return successHTML
+//
+// host 非空时（CLI 关联 desktop 场景）渲染"返回 Tinia 首页"按钮 + 提示文案
+// 改成"可点击按钮回到主界面"；为空时（系统浏览器流）显示原版"关闭页面" 文案。
+//
+// desktop 场景下 webview 加载的是 CLI 本地 callback HTML，按钮点击只是
+// location.href 跳到 host/，让 webview 加载 daemon 主页面 —— CLI 此时
+// 已经退出，按钮逻辑必须纯前端。
+func SuccessPage(host string) string {
+	if host != "" {
+		return fmt.Sprintf(successHTMLTemplate,
+			"你已经成功登录 Tinia。可以返回主界面继续使用。",
+			fmt.Sprintf(`<a class="back-btn" href="%s/">返回 Tinia 首页</a>`, html.EscapeString(host)),
+		)
+	}
+	return fmt.Sprintf(successHTMLTemplate,
+		"可以关闭这个页面，回到终端继续使用 <code>tinia</code> 命令。",
+		"",
+	)
 }
 
 // FailurePage 返回授权失败页面 HTML，reason 会显示在卡片上（已 HTML 转义）。
-// 传空字符串则不显示原因块。
-func FailurePage(reason string) string {
-	block := ""
-	if reason != "" {
-		block = fmt.Sprintf(`<div class="reason">%s</div>`, html.EscapeString(reason))
+// 传空字符串则不显示原因块。host 非空时（desktop 场景）额外加"返回 Tinia 首页"
+// 按钮 + 提示文案改"返回主界面后重试"。
+func FailurePage(reason, host string) string {
+	tip := "这次登录没有完成，可关闭页面后重试 <code>tinia login</code>。"
+	if host != "" {
+		tip = "这次登录没有完成，可返回主界面后重新触发 <code>tinia login</code>。"
 	}
-	return fmt.Sprintf(failureTemplate, block)
+	reasonBlock := ""
+	if reason != "" {
+		reasonBlock = fmt.Sprintf(`<div class="reason">%s</div>`, html.EscapeString(reason))
+	}
+	backBtn := ""
+	if host != "" {
+		backBtn = fmt.Sprintf(`<a class="back-btn" href="%s/">返回 Tinia 首页</a>`, html.EscapeString(host))
+	}
+	return fmt.Sprintf(failureTemplate, tip, reasonBlock, backBtn)
 }
