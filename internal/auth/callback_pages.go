@@ -4,8 +4,8 @@
 package auth
 
 import (
-	"fmt"
 	"html"
+	"strings"
 )
 
 const callbackBaseStyle = `
@@ -90,6 +90,8 @@ const callbackBaseStyle = `
 </style>
 `
 
+// 模板里 CSS 含 `100%` 等百分号，不能用 fmt.Sprintf（会被当 format directive
+// 解析报 %!s(MISSING)）。改用 strings.Replace 替换 __TIP__ / __EXTRA__ 占位符。
 const successHTMLTemplate = `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -106,8 +108,8 @@ const successHTMLTemplate = `<!doctype html>
       <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg>
     </div>
     <h1>授权成功</h1>
-    <p>%s</p>
-    %s
+    <p>__TIP__</p>
+    __EXTRA__
     <div class="brand"><strong>TINIA</strong> &nbsp;·&nbsp; CLI</div>
   </main>
 </body>
@@ -129,9 +131,9 @@ const failureTemplate = `<!doctype html>
       <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
     </div>
     <h1>授权失败</h1>
-    <p>%s</p>
-    %s
-    %s
+    <p>__TIP__</p>
+    __REASON__
+    __EXTRA__
     <div class="brand"><strong>TINIA</strong> &nbsp;·&nbsp; CLI</div>
   </main>
 </body>
@@ -146,16 +148,16 @@ const failureTemplate = `<!doctype html>
 // location.href 跳到 host/，让 webview 加载 daemon 主页面 —— CLI 此时
 // 已经退出，按钮逻辑必须纯前端。
 func SuccessPage(host string) string {
+	tip := "可以关闭这个页面，回到终端继续使用 <code>tinia</code> 命令。"
+	extra := ""
 	if host != "" {
-		return fmt.Sprintf(successHTMLTemplate,
-			"你已经成功登录 Tinia。可以返回主界面继续使用。",
-			fmt.Sprintf(`<a class="back-btn" href="%s/">返回 Tinia 首页</a>`, html.EscapeString(host)),
-		)
+		tip = "你已经成功登录 Tinia。可以返回主界面继续使用。"
+		extra = `<a class="back-btn" href="` + html.EscapeString(host) + `/">返回 Tinia 首页</a>`
 	}
-	return fmt.Sprintf(successHTMLTemplate,
-		"可以关闭这个页面，回到终端继续使用 <code>tinia</code> 命令。",
-		"",
-	)
+	return strings.NewReplacer(
+		"__TIP__", tip,
+		"__EXTRA__", extra,
+	).Replace(successHTMLTemplate)
 }
 
 // FailurePage 返回授权失败页面 HTML，reason 会显示在卡片上（已 HTML 转义）。
@@ -168,11 +170,15 @@ func FailurePage(reason, host string) string {
 	}
 	reasonBlock := ""
 	if reason != "" {
-		reasonBlock = fmt.Sprintf(`<div class="reason">%s</div>`, html.EscapeString(reason))
+		reasonBlock = `<div class="reason">` + html.EscapeString(reason) + `</div>`
 	}
-	backBtn := ""
+	extra := ""
 	if host != "" {
-		backBtn = fmt.Sprintf(`<a class="back-btn" href="%s/">返回 Tinia 首页</a>`, html.EscapeString(host))
+		extra = `<a class="back-btn" href="` + html.EscapeString(host) + `/">返回 Tinia 首页</a>`
 	}
-	return fmt.Sprintf(failureTemplate, tip, reasonBlock, backBtn)
+	return strings.NewReplacer(
+		"__TIP__", tip,
+		"__REASON__", reasonBlock,
+		"__EXTRA__", extra,
+	).Replace(failureTemplate)
 }
