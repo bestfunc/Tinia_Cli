@@ -155,7 +155,7 @@ func SuccessPage(host string) string {
 		// 那个 origin 的 localStorage。OAuth 流程跳到 callback origin 后
 		// localStorage 看不到，跳任何其他 origin 都不行。
 		//
-		// 1.5 秒后自动 location.href = 'wails://wails.localhost/' —— 让
+		// 1.5 秒后自动 location.href = 'wails://wails/' —— 让
 		// webview 回到 Wails 内部 origin，localStorage 里 token 还在，
 		// React 检测已登录 → 跳 /graphs。
 		//
@@ -164,8 +164,9 @@ func SuccessPage(host string) string {
 		tip = "你已经成功登录 Tinia。正在自动返回主界面..."
 		extra = `<a class="back-btn" id="back-btn" href="#">返回 Tinia 首页</a>
 <script>
-  // Wails webview 内部 origin 为 wails.localhost（v2 默认）
-  var BACK_URL = 'wails://wails.localhost/';
+  // Wails v2 webview 内部 origin 实测为 wails://wails/
+  // （配置时叫 wails.localhost 但实际请求 host = wails）
+  var BACK_URL = 'wails://wails/';
   document.getElementById('back-btn').addEventListener('click', function(e) {
     e.preventDefault();
     window.location.href = BACK_URL;
@@ -198,7 +199,7 @@ func FailurePage(reason, host string) string {
 <script>
   document.getElementById('back-btn').addEventListener('click', function(e) {
     e.preventDefault();
-    window.location.href = 'wails://wails.localhost/';
+    window.location.href = 'wails://wails/';
   });
 </script>`
 	}
