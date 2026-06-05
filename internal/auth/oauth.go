@@ -22,6 +22,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -83,7 +84,7 @@ func Login(ctx context.Context, host, scopes string) (*HostAuth, error) {
 		return nil, err
 	}
 
-	// 4. 拼授权 URL + 打开（desktop 走 tinia://，其他走 https?://）
+	// 4. 拼授权 query
 	authQuery := url.Values{
 		"response_type":         {"code"},
 		"client_id":             {clientID},
@@ -93,19 +94,28 @@ func Login(ctx context.Context, host, scopes string) (*HostAuth, error) {
 		"code_challenge":        {challenge},
 		"code_challenge_method": {"S256"},
 	}.Encode()
+	authPath := "/oauth/authorize?" + authQuery
+	authURL := host + authPath
 
-	var authURL string
+	// 5. 唤起授权页：desktop 走 Wails IPC（让 app 内 webview 跳页），其他走系统浏览器
+	//
+	// desktop 不能用 tinia:// URL scheme —— macOS LaunchServices 在 ad-hoc 签名下
+	// 不尊重 LSMultipleInstancesProhibited，每次 open tinia:// 都启第二个 Tinia.app
+	// 实例 → 老主进程被 macOS 资源冲突 kill → 用户看到闪退。
+	//
+	// 改走 daemon 锁文件里的 Wails IPC HTTP 端口 —— 直接告诉已跑的 app 跳路由，
+	// 不触发 LaunchServices，不启第二个实例。
 	if isDesktop {
-		// tinia://oauth/authorize?...  —— Wails app native URL handler 接管，
-		// webview 内部跳到 daemon 的 /oauth/authorize 页面（已登录 session 直接生效）
-		authURL = "tinia://oauth/authorize?" + authQuery
-		fmt.Printf("→ 在 Tinia 桌面 app 内完成授权（弹窗后请确认）\n")
-		fmt.Printf("  如未自动唤起：%s\n", host+"/oauth/authorize?"+authQuery)
+		if tryDesktopNavigate(ctx, authPath) {
+			fmt.Printf("→ 已在 Tinia 桌面 app 内打开授权页面，请确认\n")
+		} else {
+			fmt.Printf("→ 未能与 Tinia 桌面 app 通信，请手动复制下面 URL 到 app 内浏览器：\n  %s\n", authURL)
+			_ = openBrowser(authURL)
+		}
 	} else {
-		authURL = host + "/oauth/authorize?" + authQuery
 		fmt.Printf("→ 在浏览器中打开授权页：\n  %s\n", authURL)
+		_ = openBrowser(authURL)
 	}
-	_ = openBrowser(authURL)
 
 	// 5. 等 callback
 	codeCh := make(chan string, 1)
@@ -238,6 +248,52 @@ func EnsureValid(ctx context.Context, host string) (*HostAuth, error) {
 }
 
 // ===== private helpers =====
+
+// tryDesktopNavigate 通过 Tinia 桌面 app 的 IPC 端口让 webview 跳到指定路径。
+// 端口写在锁文件 $UserCacheDir/Tinia/desktop.lock 里（main 仓 desktop/single_instance.go
+// 创建），调 POST /navigate?path=...
+//
+// 成功 → 返回 true（webview 内部已 location.href = path）
+// 失败（锁文件不在 / 端口连不通 / 非 200） → 返回 false，调用方应降级
+func tryDesktopNavigate(ctx context.Context, path string) bool {
+	lockPath := desktopLockFilePath()
+	if lockPath == "" {
+		return false
+	}
+	data, err := os.ReadFile(lockPath)
+	if err != nil {
+		return false
+	}
+	var lock struct {
+		Addr string `json:"addr"`
+	}
+	if err := json.Unmarshal(data, &lock); err != nil || lock.Addr == "" {
+		return false
+	}
+
+	ipcURL := lock.Addr + "/navigate?path=" + url.QueryEscape(path)
+	req, err := http.NewRequestWithContext(ctx, "POST", ipcURL, nil)
+	if err != nil {
+		return false
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == 200
+}
+
+// desktopLockFilePath 返回 Tinia 桌面 app 的锁文件路径，跟主仓
+// desktop/single_instance.go 的 lockFilePath() 必须保持一致。
+func desktopLockFilePath() string {
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		return ""
+	}
+	return dir + "/Tinia/desktop.lock"
+}
 
 // detectDesktopEdition GET /api/v1/meta，返回 host 是否是 desktop 实例。
 // 任何网络 / 解析错误一律按 false 处理，让流程降级到标准 OAuth。
