@@ -121,9 +121,14 @@ func Login(ctx context.Context, host, scopes string) (*HostAuth, error) {
 	// desktop 场景下 webview 加载 callback HTML（不会自动关），SuccessPage / FailurePage
 	// 需要"返回 Tinia 首页"按钮跳回 host/；非 desktop（系统浏览器）传空 host，
 	// 显示原版"关闭页面" 文案。
+	//
+	// host 里 localhost 要规范化到 127.0.0.1 —— daemon 实际监听 127.0.0.1，
+	// webview 原本就在那个 origin 下登录。如果按钮跳 localhost，浏览器视为
+	// 不同 origin（host header 不同），cookie 不共享 → React 检测未登录 →
+	// 跳到 /login，用户感觉"又得登录"。
 	backHost := ""
 	if isDesktop {
-		backHost = host
+		backHost = strings.Replace(host, "//localhost", "//127.0.0.1", 1)
 	}
 	codeCh := make(chan string, 1)
 	errCh := make(chan error, 1)
