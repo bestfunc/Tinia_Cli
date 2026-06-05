@@ -31,14 +31,28 @@ import (
 const (
 	clientName    = "Tinia CLI"
 	defaultScopes = "mcp:dev mcp:nodes mcp:flow"
+
+	// desktopClientID 是主仓 migration 0055 注册的内置 OAuth client。
+	// CLI 关联本机 desktop 时直接 hardcode，不走 DCR —— desktop 是单用户环境，
+	// loopback 信任边界内安全（PKCE 防 code 拦截，state 防 CSRF）。
+	desktopClientID = "tinia-cli-desktop"
 )
 
 // Login 跑完整 OAuth 流程，存好 token。
+//
+// 自动识别 host 的 edition：
+//   - desktop  → 用 `tinia://` URL scheme 唤起 Wails app 内授权（已登录 session 直接生效）
+//   - 其他      → 系统浏览器走标准 OAuth + DCR
+//
+// 若 meta 检测失败，降级为标准流程。
 func Login(ctx context.Context, host, scopes string) (*HostAuth, error) {
 	host = strings.TrimRight(host, "/")
 	if scopes == "" {
 		scopes = defaultScopes
 	}
+
+	// 探测 host edition：desktop 走 app 内授权（避开系统浏览器 vs webview 双 session 问题）
+	isDesktop := detectDesktopEdition(ctx, host)
 
 	// 1. 起本地 callback server
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -48,10 +62,15 @@ func Login(ctx context.Context, host, scopes string) (*HostAuth, error) {
 	port := listener.Addr().(*net.TCPAddr).Port
 	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/callback", port)
 
-	// 2. DCR 注册临时 client
-	clientID, err := registerClient(ctx, host, redirectURI)
-	if err != nil {
-		return nil, fmt.Errorf("DCR 注册失败: %w", err)
+	// 2. 拿 client_id：desktop 用内置 hardcode，其他走 DCR
+	var clientID string
+	if isDesktop {
+		clientID = desktopClientID
+	} else {
+		clientID, err = registerClient(ctx, host, redirectURI)
+		if err != nil {
+			return nil, fmt.Errorf("DCR 注册失败: %w", err)
+		}
 	}
 
 	// 3. PKCE
@@ -64,8 +83,8 @@ func Login(ctx context.Context, host, scopes string) (*HostAuth, error) {
 		return nil, err
 	}
 
-	// 4. 拼授权 URL + 打开浏览器
-	authURL := host + "/oauth/authorize?" + url.Values{
+	// 4. 拼授权 URL + 打开（desktop 走 tinia://，其他走 https?://）
+	authQuery := url.Values{
 		"response_type":         {"code"},
 		"client_id":             {clientID},
 		"redirect_uri":          {redirectURI},
@@ -75,7 +94,17 @@ func Login(ctx context.Context, host, scopes string) (*HostAuth, error) {
 		"code_challenge_method": {"S256"},
 	}.Encode()
 
-	fmt.Printf("→ 在浏览器中打开授权页：\n  %s\n", authURL)
+	var authURL string
+	if isDesktop {
+		// tinia://oauth/authorize?...  —— Wails app native URL handler 接管，
+		// webview 内部跳到 daemon 的 /oauth/authorize 页面（已登录 session 直接生效）
+		authURL = "tinia://oauth/authorize?" + authQuery
+		fmt.Printf("→ 在 Tinia 桌面 app 内完成授权（弹窗后请确认）\n")
+		fmt.Printf("  如未自动唤起：%s\n", host+"/oauth/authorize?"+authQuery)
+	} else {
+		authURL = host + "/oauth/authorize?" + authQuery
+		fmt.Printf("→ 在浏览器中打开授权页：\n  %s\n", authURL)
+	}
 	_ = openBrowser(authURL)
 
 	// 5. 等 callback
@@ -209,6 +238,37 @@ func EnsureValid(ctx context.Context, host string) (*HostAuth, error) {
 }
 
 // ===== private helpers =====
+
+// detectDesktopEdition GET /api/v1/meta，返回 host 是否是 desktop 实例。
+// 任何网络 / 解析错误一律按 false 处理，让流程降级到标准 OAuth。
+//
+// 主仓返回结构是 {"code":0,"data":{"edition":"desktop",...}}，所以要解 data 字段
+// 里的 edition，不是 root。
+func detectDesktopEdition(ctx context.Context, host string) bool {
+	req, err := http.NewRequestWithContext(ctx, "GET", host+"/api/v1/meta", nil)
+	if err != nil {
+		return false
+	}
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return false
+	}
+	body, _ := io.ReadAll(resp.Body)
+	var envelope struct {
+		Data struct {
+			Edition string `json:"edition"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return false
+	}
+	return envelope.Data.Edition == "desktop"
+}
 
 func registerClient(ctx context.Context, host, redirectURI string) (string, error) {
 	body, _ := json.Marshal(map[string]any{
