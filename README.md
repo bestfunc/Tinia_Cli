@@ -43,10 +43,11 @@ sudo mv tinia /usr/local/bin/
 ### 典型工作流
 
 ```bash
-# 一次性 OAuth 授权（按你的 Tinia 实例选 host）
+# 一次性 OAuth 授权
+tinia login                                            # 默认连本机 desktop（http://localhost:18720）
 tinia login --host https://tinia-saas.bestfunc.com    # SaaS 公网
 tinia login --host https://t.bestfunc.com             # 公司私有化
-tinia login --host http://localhost:18722             # 本地 dev
+tinia login --host http://localhost:18722             # 本地 dev server
 
 # 在你的项目目录初始化 — 选关联到哪个 dev project
 cd ~/work/my-acoustic-tools
@@ -69,7 +70,7 @@ tinia logs --follow
 
 | 命令 | 说明 |
 |---|---|
-| `tinia login --host <url>` | OAuth 浏览器流，token 存 `~/.tinia/auth.json`（多 host 共存） |
+| `tinia login [--host <url>]` | OAuth 授权，token 存 `~/.tinia/auth.json`（多 host 共存）。不带 `--host` 默认 `http://localhost:18720` |
 | `tinia logout --host <url>` | 删除本地 token |
 | `tinia whoami` | 列出已登录的 Tinia 实例 |
 | `tinia init` | 在当前目录建 `.tinia/config.yaml`，选关联的 dev project |
@@ -100,16 +101,26 @@ exclude:
 
 ## Authentication 详情
 
-CLI 用 OAuth 2.1 授权码 + PKCE + RFC 7591 动态客户端注册：
+CLI 用 OAuth 2.1 授权码 + PKCE，按 host 类型分两条路径：
 
-1. `tinia login` 调 `POST {host}/api/v1/oauth/register` 注册一次性 client
+**SaaS / 私有化 / 本地 dev server**（标准 OAuth 浏览器流）：
+
+1. `tinia login --host <url>` 调 `POST {host}/api/v1/oauth/register` 注册一次性 client（RFC 7591 DCR）
 2. 起本地 `127.0.0.1:<random>/callback` 监听
-3. 浏览器打开 `{host}/oauth/authorize?...&code_challenge=S256(...)`
+3. 系统浏览器打开 `{host}/oauth/authorize?...&code_challenge=S256(...)`
 4. 用户登录 + 同意 → 浏览器跳回 callback
 5. `POST /api/v1/oauth/token` 用 code + verifier 换 access_token + refresh_token
 6. 存 `~/.tinia/auth.json`（0600 权限）
 
-access_token 默认 30 天有效，过期 CLI 自动用 refresh_token 续期；如果 refresh 也失败会提示重新 `tinia login`。
+**本机 desktop**（`tinia login` 不带 `--host`，或 host=`localhost:18720`）：
+
+CLI 先 GET `/api/v1/meta` 检测 `edition=desktop` 后改走 `tinia://` URL scheme 唤起 Tinia.app webview 内授权 —— 避开系统浏览器跟 webview 双 session 问题（用户在 app 里已登录的 admin 直接生效，不用二次输密码）。
+
+- 不走 DCR：hardcode 用主仓内置 client `tinia-cli-desktop`
+- redirect_uri 仍走 loopback callback，daemon 端口豁免允许任意 random 端口
+- 任何检测 / 唤起失败一律降级回系统浏览器流程，并打印 URL 让用户手动复制
+
+access_token 默认 30 天有效，过期 CLI 自动用 refresh_token 续期；如果 refresh 也失败会自动重新走授权流程。
 
 scope 默认申请 `mcp:dev mcp:nodes mcp:flow`，能调用 dev 工具集 + 节点元信息查询 + 流程执行（用于 `tinia run`）。可以 `--scopes "mcp:dev"` 缩小范围。
 
