@@ -81,6 +81,7 @@ tinia logs --follow
 | `tinia dev` | watch 模式：fsnotify 监听 + debounce 自动 push + reload |
 | `tinia logs --follow` | 跟踪节点运行日志 |
 | `tinia run --node <key>` | 测节点运行 |
+| `tinia mcp file [--host <url>]` | 本地文件 MCP server（stdio），由 AI 客户端启动，见下文 |
 
 ## 项目配置
 
@@ -123,6 +124,74 @@ CLI 先 GET `/api/v1/meta` 检测 `edition=desktop` 后改走 `tinia://` URL sch
 access_token 默认 30 天有效，过期 CLI 自动用 refresh_token 续期；如果 refresh 也失败会自动重新走授权流程。
 
 scope 默认申请 `mcp:dev mcp:nodes mcp:flow`，能调用 dev 工具集 + 节点元信息查询 + 流程执行（用于 `tinia run`）。可以 `--scopes "mcp:dev"` 缩小范围。
+
+## 给 AI 客户端用：`tinia mcp file`
+
+`tinia mcp file` 是一个 stdio MCP server，由 AI 客户端（Claude Code / Codex / opencode …）
+按配置启动，**不需要手动运行**。它提供必须跑在 AI 所在机器上的三个工具：
+
+| 工具 | 作用 |
+|---|---|
+| `upload_file_to_datasource(datasource_id, local_path, filename?)` | 把本机文件上传进 Tinia 数据源（流式，任意大小，内存不随文件变大） |
+| `fetch_blob(blob_uri, save_path?, include_base64?)` | 把 Tinia 的 blob 拉到本机磁盘，返回落地路径、格式嗅探、sha256 |
+| `agentport_status()` | 报告 CLI 版本和所连 Tinia 的版本，用于核对安装是否匹配 |
+
+其余能力（流程、节点、数据源管理…）走 Tinia 自己的远程 MCP `{host}/api/v1/mcp`，两者一起配。
+
+**连哪个 Tinia**（取第一个有值的）：`--host` → 环境变量 `TINIA_ENDPOINT` → 当前目录向上找到的
+`.tinia/config.yaml` 的 `host` → 本机桌面版 `http://localhost:18720`。
+
+**鉴权**：
+
+- 环境变量 `TINIA_TOKEN` 有值就直接用（个人访问令牌），不走 OAuth；
+- 本机桌面版（host 是 localhost 且 `/api/v1/meta` 报 `edition=desktop`）免登录；
+- 其余走 OAuth，与 `tinia login` 共用 `~/.tinia/auth.json`。第一次调用缺「数据源」权限
+  （`mcp:data` / `mcp:data_write`）时会打开浏览器补授权，申请的是**已有权限的并集**，
+  不会把 `tinia login` 拿到的 `mcp:dev` 等冲掉。授权链接同时打在 stderr，浏览器打不开时手动复制。
+
+stdout 是 MCP 协议通道，所有日志都在 stderr。
+
+**配置示例**（`command` 一律写绝对路径，下面假设 CLI 装在 `~/.tinia/bin/tinia`，
+Tinia 地址是 `http://10.1.2.3:18720`）：
+
+Claude Code：
+
+```bash
+claude mcp add --scope user tinia-file -- /Users/me/.tinia/bin/tinia mcp file --host http://10.1.2.3:18720
+claude mcp add --transport http --scope user tinia http://10.1.2.3:18720/api/v1/mcp
+```
+
+Codex（`~/.codex/config.toml`）：
+
+```toml
+[mcp_servers.tinia-file]
+command = "/Users/me/.tinia/bin/tinia"
+args = ["mcp", "file", "--host", "http://10.1.2.3:18720"]
+
+[mcp_servers.tinia]
+url = "http://10.1.2.3:18720/api/v1/mcp"
+```
+
+opencode（`~/.config/opencode/opencode.json`）：
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "tinia-file": {
+      "type": "local",
+      "command": ["/Users/me/.tinia/bin/tinia", "mcp", "file", "--host", "http://10.1.2.3:18720"]
+    },
+    "tinia": { "type": "remote", "url": "http://10.1.2.3:18720/api/v1/mcp" }
+  }
+}
+```
+
+Windows 下路径是 `C:\Users\me\.tinia\bin\tinia.exe`，写进 JSON / TOML 字符串时反斜杠要写成 `\\`。
+
+> 它取代了 Node 写的 `tinia-file-mcp`（Tinia_Local_MCP 仓）：工具名、参数、返回字段不变，
+> 客户机不再需要 Node。token 从 `~/.tinia/tinia-file-mcp.json` 改为与 CLI 共用 `~/.tinia/auth.json`，
+> 第一次用会重新授权一次。
 
 ## 跟 Developer Studio 的区别
 

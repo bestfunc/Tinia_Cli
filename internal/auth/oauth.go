@@ -39,6 +39,14 @@ const (
 	desktopClientID = "tinia-cli-desktop"
 )
 
+// Out 是登录流程给人看的提示（「在浏览器中打开授权页」等）写到哪。
+// 默认 stdout；`tinia mcp file` 这类 stdio MCP server 的 stdout 是协议通道，
+// 必须改成 os.Stderr，否则一行提示就会把客户端的 JSON-RPC 解析弄坏。
+var Out io.Writer = os.Stdout
+
+// BrowserOpener 打开授权页的方式；测试里换成直接 GET 授权 URL 的假浏览器。
+var BrowserOpener = openBrowser
+
 // Login 跑完整 OAuth 流程，存好 token。
 //
 // 自动识别 host 的 edition：
@@ -107,14 +115,14 @@ func Login(ctx context.Context, host, scopes string) (*HostAuth, error) {
 	// 不触发 LaunchServices，不启第二个实例。
 	if isDesktop {
 		if tryDesktopNavigate(ctx, authPath) {
-			fmt.Printf("→ 已在 Tinia 桌面 app 内打开授权页面，请确认\n")
+			fmt.Fprintf(Out, "→ 已在 Tinia 桌面 app 内打开授权页面，请确认\n")
 		} else {
-			fmt.Printf("→ 未能与 Tinia 桌面 app 通信，请手动复制下面 URL 到 app 内浏览器：\n  %s\n", authURL)
-			_ = openBrowser(authURL)
+			fmt.Fprintf(Out, "→ 未能与 Tinia 桌面 app 通信，请手动复制下面 URL 到 app 内浏览器：\n  %s\n", authURL)
+			_ = BrowserOpener(authURL)
 		}
 	} else {
-		fmt.Printf("→ 在浏览器中打开授权页：\n  %s\n", authURL)
-		_ = openBrowser(authURL)
+		fmt.Fprintf(Out, "→ 在浏览器中打开授权页（打不开就手动复制到浏览器）：\n  %s\n", authURL)
+		_ = BrowserOpener(authURL)
 	}
 
 	// 5. 等 callback
@@ -194,6 +202,7 @@ func Login(ctx context.Context, host, scopes string) (*HostAuth, error) {
 		AccessToken:  tok.AccessToken,
 		RefreshToken: tok.RefreshToken,
 		ExpiresAt:    time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second),
+		Scopes:       grantedScopes(tok.Scope, scopes),
 	}
 	if err := Put(host, ha); err != nil {
 		return nil, fmt.Errorf("存 token 失败: %w", err)
@@ -225,6 +234,9 @@ func Refresh(ctx context.Context, host string) (*HostAuth, error) {
 		ha.RefreshToken = tok.RefreshToken
 	}
 	ha.ExpiresAt = time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second)
+	if tok.Scope != "" {
+		ha.Scopes = splitScopes(tok.Scope)
+	}
 	if err := Put(host, ha); err != nil {
 		return nil, err
 	}
@@ -243,7 +255,7 @@ func EnsureValid(ctx context.Context, host string) (*HostAuth, error) {
 		return nil, err
 	}
 	if ha == nil {
-		fmt.Printf("→ 未登录 %s，跳转浏览器登录...\n", host)
+		fmt.Fprintf(Out, "→ 未登录 %s，跳转浏览器登录...\n", host)
 		return Login(ctx, host, "")
 	}
 	if ha.Expired() {
@@ -253,13 +265,96 @@ func EnsureValid(ctx context.Context, host string) (*HostAuth, error) {
 		}
 		// refresh 失败的常见原因：refresh_token 过期 / 被吊销 / 服务端 client 被清。
 		// 不要 fail —— 自动重新走授权码 + PKCE 流程。
-		fmt.Printf("→ 登录会话已过期（%v），重新跳转浏览器登录...\n", refreshErr)
+		fmt.Fprintf(Out, "→ 登录会话已过期（%v），重新跳转浏览器登录...\n", refreshErr)
 		return Login(ctx, host, "")
 	}
 	return ha, nil
 }
 
+// EnsureScopes 像 EnsureValid 一样取 host 的有效 token，但额外保证 token 至少带 need 里
+// 的每个 scope；缺了就重新授权，申请的是「已有 scope ∪ want」的**并集**。
+//
+// 为什么必须并集：auth.json 一个 host 只存一组 token。`tinia mcp file` 要 mcp:data，
+// 如果只申请 mcp:data，新 token 会把 `tinia login` 拿到的 mcp:dev 等冲掉，下次
+// tinia push 就 403。没登录过时用 defaultScopes ∪ want，理由相同。
+//
+// need 是「token 能用」的最低门槛，want 是顺带申请的（server 会按用户组权限取交集，
+// 申请了不一定给）。两者分开，是为了只开了只读权限的用户不会因为拿不到 want 里的
+// 写权限而每次都被拉去重新授权。
+func EnsureScopes(ctx context.Context, host string, need, want []string) (*HostAuth, error) {
+	host = strings.TrimRight(host, "/")
+	ha, err := Get(host)
+	if err != nil {
+		return nil, err
+	}
+	if ha != nil && ha.Expired() {
+		if refreshed, refreshErr := Refresh(ctx, host); refreshErr == nil {
+			ha = refreshed
+		} else {
+			fmt.Fprintf(Out, "→ 登录会话已过期（%v），重新跳转浏览器登录...\n", refreshErr)
+			ha = &HostAuth{Scopes: ha.ScopeList()} // 只留旧 scope 用于并集，token 作废
+		}
+	}
+	if ha != nil && ha.AccessToken != "" && ha.HasScopes(need) {
+		return ha, nil
+	}
+
+	base := splitScopes(defaultScopes)
+	if ha != nil {
+		base = ha.ScopeList()
+	}
+	scopes := strings.Join(unionScopes(base, want, need), " ")
+	if ha == nil {
+		fmt.Fprintf(Out, "→ 未登录 %s，跳转浏览器登录...\n", host)
+	} else if ha.AccessToken != "" {
+		fmt.Fprintf(Out, "→ 当前授权缺少 %s，重新授权（申请 %s）...\n", strings.Join(missingScopes(ha.ScopeList(), need), " "), scopes)
+	}
+	return Login(ctx, host, scopes)
+}
+
 // ===== private helpers =====
+
+// grantedScopes 取 token 响应里 server 实际授予的 scope；server 没回 scope 字段时
+// 退回到申请的那组（RFC 6749 §5.1：省略 scope 表示与申请的相同）。
+func grantedScopes(granted, requested string) []string {
+	if granted != "" {
+		return splitScopes(granted)
+	}
+	return splitScopes(requested)
+}
+
+func splitScopes(s string) []string {
+	return strings.Fields(s)
+}
+
+// unionScopes 按出现顺序合并去重。
+func unionScopes(lists ...[]string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, l := range lists {
+		for _, s := range l {
+			if s != "" && !seen[s] {
+				seen[s] = true
+				out = append(out, s)
+			}
+		}
+	}
+	return out
+}
+
+func missingScopes(have, need []string) []string {
+	got := map[string]bool{}
+	for _, s := range have {
+		got[s] = true
+	}
+	var out []string
+	for _, s := range need {
+		if !got[s] {
+			out = append(out, s)
+		}
+	}
+	return out
+}
 
 // tryDesktopNavigate 通过 Tinia 桌面 app 的 IPC 端口让 webview 跳到指定路径。
 // 端口写在锁文件 $UserCacheDir/Tinia/desktop.lock 里（main 仓 desktop/single_instance.go

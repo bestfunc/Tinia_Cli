@@ -5,7 +5,8 @@
 //	    "client_id":     "abc123",
 //	    "access_token":  "...",
 //	    "refresh_token": "...",
-//	    "expires_at":    "2026-05-28T..."
+//	    "expires_at":    "2026-05-28T...",
+//	    "scopes":        ["mcp:dev", "mcp:nodes", "mcp:flow"]
 //	  },
 //	  "https://t.bestfunc.com": { ... }
 //	}
@@ -30,6 +31,22 @@ type HostAuth struct {
 	AccessToken  string    `json:"access_token"`
 	RefreshToken string    `json:"refresh_token,omitempty"`
 	ExpiresAt    time.Time `json:"expires_at"`
+	// Scopes server 实际授予的 scope。老版本 CLI 写的 auth.json 没有这个字段。
+	Scopes []string `json:"scopes,omitempty"`
+}
+
+// ScopeList 返回已授予的 scope。老 auth.json 没记 scope 时，按 tinia login 的默认
+// 申请值算 —— 那是老版本唯一会写这个文件的途径。
+func (h *HostAuth) ScopeList() []string {
+	if len(h.Scopes) == 0 {
+		return splitScopes(defaultScopes)
+	}
+	return h.Scopes
+}
+
+// HasScopes 是否带齐 need 里的每个 scope。
+func (h *HostAuth) HasScopes(need []string) bool {
+	return len(missingScopes(h.ScopeList(), need)) == 0
 }
 
 // Expired 检查 access_token 是否已过期（保守策略：剩 60 秒就当过期，提前刷新）。

@@ -54,6 +54,7 @@ dev workspace 跑测试，省去打开浏览器在 Developer Studio 编辑的麻
 		newDevCmd(),
 		newLogsCmd(),
 		newRunCmd(),
+		newMCPCmd(),
 	)
 
 	if err := root.Execute(); err != nil {
