@@ -11,6 +11,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -57,8 +58,37 @@ dev workspace 跑测试，省去打开浏览器在 Developer Studio 编辑的麻
 		newMCPCmd(),
 	)
 
+	root.SetArgs(dispatchArgs(os.Args[0], os.Args[1:]))
 	if err := root.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "✗ %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// localMCPName 随 Tinia 分发、装到用户机器上的本地 MCP 程序名（AgentPort）。
+// 同一个二进制改叫这个名字时，只当 `tinia mcp` 用：
+//
+//	tinia-local-mcp file --host …   ≡   tinia mcp file --host …
+//	tinia-local-mcp --version       照常报版本
+//
+// 单独起名是为了和 GUI 的 Tinia.exe、后台服务 tinia-cli.exe、开发者自己装的 tinia 命令行都不混：
+// 用户在 AI 客户端配置里看到它就知道是「本地 MCP」。以 tinia 名字调用时行为完全不变。
+const localMCPName = "tinia-local-mcp"
+
+// dispatchArgs 按 argv[0] 决定交给 cobra 的参数：程序名（去掉目录与 .exe、不分大小写）
+// 是 tinia-local-mcp 时，在前面补一个 "mcp"；--version / -v 留给根命令。
+func dispatchArgs(argv0 string, args []string) []string {
+	// 两种分隔符都切：filepath.Base 只认本平台的，交叉场景（如测试里的 Windows 路径）会漏
+	name := argv0
+	if i := strings.LastIndexAny(name, `/\`); i >= 0 {
+		name = name[i+1:]
+	}
+	name = strings.TrimSuffix(strings.ToLower(name), ".exe")
+	if name != localMCPName {
+		return args
+	}
+	if len(args) > 0 && (args[0] == "--version" || args[0] == "-v") {
+		return args
+	}
+	return append([]string{"mcp"}, args...)
 }

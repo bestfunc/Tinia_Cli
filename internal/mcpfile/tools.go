@@ -48,7 +48,7 @@ var toolDefs = []map[string]any{
 	},
 	{
 		"name":        "agentport_status",
-		"description": "报告本地工具（tinia 命令行）的版本，以及它连接的 Tinia 实例的地址、应用版本、部署形态。用于核对本地安装是否与 Tinia 版本匹配（AgentPort 版本自检）；不需要登录。",
+		"description": "报告本地 MCP 程序（tinia-local-mcp / tinia 命令行）的版本，以及它连接的 Tinia 实例的地址、应用版本、部署形态。用于核对本地安装是否与 Tinia 版本匹配（AgentPort 版本自检）；不需要登录。",
 		"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
 	},
 }

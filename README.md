@@ -151,6 +151,11 @@ scope 默认申请 `mcp:dev mcp:nodes mcp:flow`，能调用 dev 工具集 + 节�
 
 stdout 是 MCP 协议通道，所有日志都在 stderr。
 
+**程序名 `tinia-local-mcp`**：随 Tinia 分发给 AI 客户端用的就是这个二进制，只是文件名叫
+`tinia-local-mcp`（Windows `tinia-local-mcp.exe`），免得和 Tinia 桌面版的 `Tinia.exe`、后台服务
+`tinia-cli.exe` 混淆。以这个名字运行时自动当 `tinia mcp` 用：`tinia-local-mcp file --host …`
+等价于 `tinia mcp file --host …`，`tinia-local-mcp --version` 照常报版本；以 `tinia` 名字运行时行为不变。
+
 **配置示例**（`command` 一律写绝对路径，下面假设 CLI 装在 `~/.tinia/bin/tinia`，
 Tinia 地址是 `http://10.1.2.3:18720`）：
 
