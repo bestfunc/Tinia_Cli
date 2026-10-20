@@ -59,14 +59,16 @@ func pickHost() (string, error) {
 }
 
 // fetchProject 调 dev_get_project 拿单个项目详情。
+// server 直接返回扁平 view（projectSummary 输出 map），不带 project 包装 —— 别套结构体读 project 字段。
 func fetchProject(ctx context.Context, c *client.Client, id int) (*projectInfo, error) {
-	var resp struct {
-		Project projectInfo `json:"project"`
-	}
+	var resp projectInfo
 	if err := c.Call(ctx, "dev_get_project", map[string]any{"project_id": id}, &resp); err != nil {
 		return nil, err
 	}
-	return &resp.Project, nil
+	if resp.ID == 0 {
+		return nil, fmt.Errorf("dev_get_project 返回空")
+	}
+	return &resp, nil
 }
 
 // listProjects 调 dev_list_projects（裸 client 即可，不需要 project context）。

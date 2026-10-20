@@ -4,8 +4,8 @@
 package auth
 
 import (
-	"fmt"
 	"html"
+	"strings"
 )
 
 const callbackBaseStyle = `
@@ -69,10 +69,30 @@ const callbackBaseStyle = `
     text-transform: uppercase;
   }
   .brand strong { color: #a78bfa; font-weight: 600; }
+  .back-btn {
+    display: inline-block;
+    margin-top: 20px;
+    padding: 10px 24px;
+    border-radius: 10px;
+    background: linear-gradient(135deg, #a78bfa, #6366f1);
+    color: #fff;
+    font-size: 14px;
+    font-weight: 500;
+    text-decoration: none;
+    border: none;
+    cursor: pointer;
+    transition: transform 0.15s, box-shadow 0.15s;
+  }
+  .back-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 8px 20px rgba(167, 139, 250, 0.35);
+  }
 </style>
 `
 
-const successHTML = `<!doctype html>
+// 模板里 CSS 含 `100%` 等百分号，不能用 fmt.Sprintf（会被当 format directive
+// 解析报 %!s(MISSING)）。改用 strings.Replace 替换 __TIP__ / __EXTRA__ 占位符。
+const successHTMLTemplate = `<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
@@ -88,7 +108,8 @@ const successHTML = `<!doctype html>
       <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg>
     </div>
     <h1>授权成功</h1>
-    <p>可以关闭这个页面，回到终端继续使用 <code>tinia</code> 命令。</p>
+    <p>__TIP__</p>
+    __EXTRA__
     <div class="brand"><strong>TINIA</strong> &nbsp;·&nbsp; CLI</div>
   </main>
 </body>
@@ -110,24 +131,81 @@ const failureTemplate = `<!doctype html>
       <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
     </div>
     <h1>授权失败</h1>
-    <p>这次登录没有完成，可关闭页面后重试 <code>tinia login</code>。</p>
-    %s
+    <p>__TIP__</p>
+    __REASON__
+    __EXTRA__
     <div class="brand"><strong>TINIA</strong> &nbsp;·&nbsp; CLI</div>
   </main>
 </body>
 </html>`
 
 // SuccessPage 返回授权成功页面 HTML。
-func SuccessPage() string {
-	return successHTML
+//
+// host 非空时（CLI 关联 desktop 场景）渲染"返回 Tinia 首页"按钮 + 提示文案
+// 改成"可点击按钮回到主界面"；为空时（系统浏览器流）显示原版"关闭页面" 文案。
+//
+// desktop 场景下 webview 加载的是 CLI 本地 callback HTML，按钮点击只是
+// location.href 跳到 host/，让 webview 加载 daemon 主页面 —— CLI 此时
+// 已经退出，按钮逻辑必须纯前端。
+func SuccessPage(host string) string {
+	tip := "可以关闭这个页面，回到终端继续使用 <code>tinia</code> 命令。"
+	extra := ""
+	if host != "" {
+		// desktop 场景：Wails webview origin 是 wails.localhost，token 存
+		// 那个 origin 的 localStorage。OAuth 流程跳到 callback origin 后
+		// localStorage 看不到，跳任何其他 origin 都不行。
+		//
+		// 1.5 秒后自动 location.href = 'wails://wails/' —— 让
+		// webview 回到 Wails 内部 origin，localStorage 里 token 还在，
+		// React 检测已登录 → 跳 /graphs。
+		//
+		// 1.5 秒延迟让用户看到"授权成功"提示，"返回 Tinia 首页"按钮 onclick
+		// 也是 wails.localhost，作为手动 fallback。
+		tip = "你已经成功登录 Tinia。正在自动返回主界面..."
+		extra = `<a class="back-btn" id="back-btn" href="#">返回 Tinia 首页</a>
+<script>
+  // Wails v2 webview 内部 origin 实测为 wails://wails/
+  // （配置时叫 wails.localhost 但实际请求 host = wails）
+  var BACK_URL = 'wails://wails/';
+  document.getElementById('back-btn').addEventListener('click', function(e) {
+    e.preventDefault();
+    window.location.href = BACK_URL;
+  });
+  setTimeout(function() { window.location.href = BACK_URL; }, 1500);
+</script>`
+	}
+	return strings.NewReplacer(
+		"__TIP__", tip,
+		"__EXTRA__", extra,
+	).Replace(successHTMLTemplate)
 }
 
 // FailurePage 返回授权失败页面 HTML，reason 会显示在卡片上（已 HTML 转义）。
-// 传空字符串则不显示原因块。
-func FailurePage(reason string) string {
-	block := ""
-	if reason != "" {
-		block = fmt.Sprintf(`<div class="reason">%s</div>`, html.EscapeString(reason))
+// 传空字符串则不显示原因块。host 非空时（desktop 场景）额外加"返回 Tinia 首页"
+// 按钮 + 提示文案改"返回主界面后重试"。
+func FailurePage(reason, host string) string {
+	tip := "这次登录没有完成，可关闭页面后重试 <code>tinia login</code>。"
+	if host != "" {
+		tip = "这次登录没有完成，可返回主界面后重新触发 <code>tinia login</code>。"
 	}
-	return fmt.Sprintf(failureTemplate, block)
+	reasonBlock := ""
+	if reason != "" {
+		reasonBlock = `<div class="reason">` + html.EscapeString(reason) + `</div>`
+	}
+	extra := ""
+	if host != "" {
+		// 同 SuccessPage：跳 wails 内部 origin 让 webview 回到 localStorage 所在的 origin
+		extra = `<a class="back-btn" id="back-btn" href="#">返回 Tinia 首页</a>
+<script>
+  document.getElementById('back-btn').addEventListener('click', function(e) {
+    e.preventDefault();
+    window.location.href = 'wails://wails/';
+  });
+</script>`
+	}
+	return strings.NewReplacer(
+		"__TIP__", tip,
+		"__REASON__", reasonBlock,
+		"__EXTRA__", extra,
+	).Replace(failureTemplate)
 }
